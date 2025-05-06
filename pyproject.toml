@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "Facedancer webcam emulation"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["facedancer>=3.1.0"]
+dependencies = [
+    "cynthion>=0.1.8",
+    "facedancer>=3.1.0",
+]
