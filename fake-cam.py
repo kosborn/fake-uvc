@@ -5,19 +5,42 @@
 # https://github.com/greatscottgadgets/facedancer/blob/2c4b8aa27857d0d93efbcfc366db19030c17ea9e/examples/minimal.py
 #
 
-import logging
+# TODO: Build a USB Descriptor class to implement a nice version of the UVC spec
 
 
-from facedancer import *
+
+# from facedancer import *
+from facedancer import (
+    DeviceSpeed,
+    LanguageIDs,
+    USBConfiguration,
+    USBControlRequest,
+    USBDescriptor,
+    USBDevice,
+    USBDirection,
+    USBEndpoint,
+    USBInterface,
+    USBSynchronizationType,
+    USBTransferType,
+    USBUsageType,
+    to_device,
+    use_inner_classes_automatically,
+    vendor_request_handler
+)
 from facedancer import main
-from facedancer.descriptor import USBDescribable, AutoInstantiable
+from facedancer.descriptor import USBDescribable, AutoInstantiable, StringRef
 from facedancer.request import USBRequestHandler
+from facedancer.logging import log, configure_default_logging, LOGLEVEL_TRACE
 
+import logging
 import binascii
 
 from dataclasses import dataclass
 from typing import List
 import struct
+
+configure_default_logging(level=LOGLEVEL_TRACE)
+
 
 
 class Association(USBDescribable, AutoInstantiable, USBRequestHandler):
@@ -26,15 +49,15 @@ class Association(USBDescribable, AutoInstantiable, USBRequestHandler):
 
 
 @use_inner_classes_automatically
-class MyDevice(USBDevice):
+class Webcam(USBDevice):
     # A Logitech HD Pro Webcam C920 was the source of my analysis
-    product_string: str = "Fakse HD Pro Webcam C920"
-    manufacturer_string: str = None
+    product_string: StringRef = StringRef.field(string="Fake HD Pro Webcam C920")
+    manufacturer_string: StringRef = StringRef.field(string="Logitek") #None
+    serial_number_string: StringRef = StringRef.field(string="C0FFEEEE")
     vendor_id: int = 0x046D # Logitech
     product_id: int = 0x082D # C920 camera
     device_speed: DeviceSpeed = DeviceSpeed.SUPER
-    serial_number_string: str = "C0FFEEEE"
-    device_revision = 0x11
+    device_revision: int = 0x11
 
     supported_languages: tuple = (LanguageIDs.ENGLISH_US,)
 
@@ -44,12 +67,12 @@ class MyDevice(USBDevice):
     protocol_revision_number: int = 0x01
     max_packet_size: int = 64
 
-    class MyConfiguration(USBConfiguration):
+    class Webcam(USBConfiguration):
 
-        # class VideoAssociation(Association):
-        #     number = 0x00
-        #     class_number = 0x0E
-        #     subclass_number = 0x03
+        class InterfaceAssociation(Association):
+            number = 0x00
+            class_number = 0x0E
+            subclass_number = 0x03
 
         class VideoControl(USBInterface):
             number = 0x00
@@ -72,66 +95,70 @@ class MyDevice(USBDevice):
                 raw: bytes = binascii.unhexlify("0d240150012800c0fc9b010101")
                 include_in_config: bool = True
 
-            class InputTerminal(USBDescriptor):
-                raw: bytes = binascii.unhexlify("122402010102000000000000000003000000")
+            class InputTerminalCamera(USBDescriptor):
+                raw: bytes = binascii.unhexlify("1124020102010000000000000000020000")
+                include_in_config: bool = True
+
+            class InputTerminalComposite(USBDescriptor):
+                raw: bytes = binascii.unhexlify("0824020204010000")
                 include_in_config: bool = True
 
             class OutputTerminal(USBDescriptor):
-                raw: bytes = binascii.unhexlify("092403020101000100")
+                raw: bytes = binascii.unhexlify("092403030101000500")
                 include_in_config: bool = True
 
-        class VideoStreaming(USBInterface):
+            class SelectorUnit(USBDescriptor):
+                raw: bytes = binascii.unhexlify('0824040402010201')
+                include_in_config: bool = True
+
+            class ProcessingUnit(USBDescriptor):
+                raw: bytes = binascii.unhexlify('0c2405050400000300010000')
+                include_in_config: bool = True
+
+            class StandardInterruptEndpoint(USBEndpoint):
+                number = 0x81
+                direction = USBDirection.IN
+                interval = 0x20
+
+            # class ClassSpecificInterruptEndpoint(USBEndpoint):
+            #     direction = USBDirection.IN
+            #     interval = 0x20
+
+
+
+        class VideoStreamingAlt0(USBInterface):
             number = 0x01
-            class_number = 0x0E
-            subclass_number = 0x02  # Video Streaming
+            alternate = 0x00
+            class_number = 0x0e
+            subclass_number = 0x02
 
             class Header(USBDescriptor):
-                # number = 0
-                raw: bytes = binascii.unhexlify("10240103ca0a81000400000001000404")
-                include_in_config: bool = True
+                raw: bytes = binascii.unhexlify('0e240101003f8200030101000100') # 2.3.5.1.2
+                include_in_config = True
 
             class FormatMJPEG(USBDescriptor):
-                # number = 1
-                raw: bytes = binascii.unhexlify("0b24060111010100000000")
+                raw: bytes = binascii.unhexlify("0b24060101010100000000") # 2.3.5.1.3
                 include_in_config: bool = True
 
-            class Frame_640x480(USBDescriptor):
+
+            class Frame(USBDescriptor):
                 # number = 2
                 raw: bytes = binascii.unhexlify(
-                    "36240701008002e001000077010000ca08006009001516050007151605009a5b060020a107002a2c0a0040420f005558140080841e00"
+                    "262407010300b00090000dec00000dec0000009480000a2c2a00000a2c2a000a2c2a00000000"
                 )
                 include_in_config: bool = True
 
-            class ColorFormat(USBDescriptor):
-                # number = 3
-                raw: bytes = binascii.unhexlify("06240d010104")
-                include_in_config: bool = True
-
-            class Endpoint(USBEndpoint):
-                number: int = 1
-                direction: USBDirection = USBDirection.IN
-                max_packet_size: int = 64
-                # transfer_type: USBTransferType = USBTransferType.ISOCHRONOUS
-                # synchronization_type: USBSynchronizationType = (
-                #     USBSynchronizationType.ASYNC
-                # )
-                # usage_type: USBUsageType = USBUsageType.DATA
-
-                # def handle_data_requested(self: USBEndpoint):
-                #     logging.info("handle_data_requested")
-                #     self.send(b"device on bulk endpoint")
-
-        class VideoSubClass1_1(USBInterface):
+        class VideoStreamingAlt1(USBInterface):
             number = 0x01
             alternate = 0x01
-            class_number = 0x0E
-            subclass_number = 0x02  # Video Streaming
+            class_number = 0x0e
+            subclass_number = 0x02
 
-            class Endpoint(USBEndpoint):
-                number: int = 2
+            class IsochronousVideoEndpoint(USBEndpoint):
+                number: int = 0x02
                 direction: USBDirection = USBDirection.IN
-                max_packet_size: int = 192
                 transfer_type: USBTransferType = USBTransferType.ISOCHRONOUS
+                max_packet_size: int = 0x01fe #510 bytes
                 synchronization_type: USBSynchronizationType = (
                     USBSynchronizationType.ASYNC
                 )
@@ -141,41 +168,61 @@ class MyDevice(USBDevice):
                     logging.info("handle_data_requested")
                     self.send(b"device on bulk endpoint")
 
-        # class MyInEndpoint(USBEndpoint):
-        #     number: int = 1
-        #     direction: USBDirection = USBDirection.IN
-        #     max_packet_size: int = 64
-
-        #     def handle_data_requested(self: USBEndpoint):
-        #         logging.info("handle_data_requested")
-        #         self.send(b"device on bulk endpoint")
-
-        # class MyOutEndpoint(USBEndpoint):
-        #     number: int = 1
-        #     direction: USBDirection = USBDirection.OUT
-        #     max_packet_size: int = 64
-
-        #     def handle_data_received(self: USBEndpoint, data):
-        #         logging.info(f"device received {data} on bulk endpoint")
-
+    # SET INTERFACE
     @vendor_request_handler(request_number=1, direction=USBDirection.IN)
     @to_device
-    def my_vendor_request_handler(self: USBDevice, request: USBControlRequest):
-        print("WTF")
+    def handle_control_request_1(self: USBDevice, request: USBControlRequest):
+        log.info("1")
+        raise Exception("1")
         request.reply(b"device sent response on control endpoint")
 
-    @vendor_request_handler(request_number=2, direction=USBDirection.OUT)
-    @to_device
-    def my_other_vendor_request_handler(self: USBDevice, request: USBControlRequest):
-        print("WTF")
-        logging.info(
-            f"device received '{request.index}' '{request.value}' '{request.data}' on control endpoint"
-        )
+    # @vendor_request_handler(request_number=2, direction=USBDirection.OUT)
+    # @to_device
+    # def my_other_vendor_request_handler(self: USBDevice, request: USBControlRequest):
+    #     print("WTF")
+    #     logging.info(
+    #         f"device received '{request.index}' '{request.value}' '{request.data}' on control endpoint"
+    #     )
 
-        # acknowledge the request
-        request.ack()
+    #     # acknowledge the request
+    #     request.ack()
+
+    @vendor_request_handler(number=2, direction=USBDirection.IN)
+    @to_device
+    def handle_control_request_2(self, request):
+        log.info("2")
+        raise Exception("2")
+        request.reply(b'')
+
+    @vendor_request_handler(number=3, direction=USBDirection.IN)
+    @to_device
+    def handle_control_request_3(self, request):
+        log.info("3")
+        raise Exception("3")
+        request.reply(b'')
+
+    @vendor_request_handler(number=4, direction=USBDirection.IN)
+    @to_device
+    def handle_control_request_4(self, request):
+        log.info("4")
+        raise Exception("4")
+        request.reply(b'')
+
+    @vendor_request_handler(number=5, direction=USBDirection.IN)
+    @to_device
+    def handle_control_request_5(self, request):
+        log.info("5")
+        raise Exception("5")
+        request.reply(b'')
+
+    @vendor_request_handler(number=6, direction=USBDirection.IN)
+    @to_device
+    def handle_control_request_6(self, request):
+        log.info("6")
+        raise Exception("6")
+        request.reply(b'')
 
 
 if __name__ == "__main__":
-    logging.getLogger().setLevel(logging.DEBUG)
-    main(MyDevice)
+    # logging.getLogger().setLevel(logging.DEBUG)
+    main(Webcam)
