@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from typing import List
 import struct
 
+import uvc
+
 configure_default_logging(level=LOGLEVEL_TRACE)
 
 
@@ -87,29 +89,66 @@ class Webcam(USBDevice):
             interface_string = 'idk'
 
             class ClassSpeicifcVideoControl(USBDescriptor):
-                raw: bytes = binascii.unhexlify('0d240100014200808d5b000101')
+                raw = uvc.ClassSpecificVCInterfaceHeader(
+                    bcdUVC=0x0100,
+                    wTotalLength=214,
+                    dwClockFrequency=30000000,
+                    bInCollection=1,
+                    baInterfaceNr=[1]
+                ).pack()
                 include_in_config: bool = True
 
 
             class InputTerminalCamera(USBDescriptor):
-                raw: bytes = binascii.unhexlify("1124020101020000000000000000020000")
+                raw = uvc.InputTerminalCameraInputDescriptor(
+                    bTerminalID=0x01,
+                    bAssocTerminal=0x00,
+                    iTerminal=0x00,
+                    wObjectiveFocalLengthMin=0x0000,
+                    wObjectiveFocalLengthMax=0x0000,
+                    wOcularFocalLength=0x0000,
+                    bmControls=0x0000,
+                ).pack()
                 include_in_config: bool = True
 
             class InputTerminalComposite(USBDescriptor):
-                raw: bytes = binascii.unhexlify("0824020201040000")
+                raw = uvc.InputTerminalDescriptor(
+                    bTerminalID=0x02,
+                    wTerminalType=0x0401,
+                    bAssocTerminal=0x00,
+                    iTerminal=0x00,
+                ).pack()
                 include_in_config: bool = True
 
             class OutputTerminal(USBDescriptor):
-                raw: bytes = binascii.unhexlify("092403030101000500")
+                raw = uvc.OutputTerminalDescriptor(
+                    bTerminalID=0x03,
+                    wTerminalType=0x0101,
+                    bAssocTerminal=0x00,
+                    bSourceID=0x05,
+                    iTerminal=0x00,
+                ).pack()
                 include_in_config: bool = True
 
             class SelectorUnit(USBDescriptor):
-                raw: bytes = binascii.unhexlify('0824040402010200')
+                raw = uvc.SelectorUnitDescriptor(
+                    bUnitID=0x05,
+                    bNrInPins=1,
+                    baSourceID=[0x01],
+                    iSelector=0x00,
+                ).pack()
                 include_in_config: bool = True
 
             # 2.3.4.7 Processing Unit Descriptor
             class ProcessingUnit(USBDescriptor):
-                raw: bytes = binascii.unhexlify('0c2405050400000301000000') # real
+                raw = uvc.ProcessingUnitDescriptor(
+                    bUnitID=0x05,
+                    bSourceID=0x04,
+                    wMaxMultiplier=0x0000,
+                    bmControls=0x0001,
+                    iProcessing=0x00,
+                    bmVideoStandards=0x00
+                ).pack()
                 include_in_config: bool = True
 
             # 2.3.4.8 Standard Interrupt Endpoint Descriptor
@@ -155,19 +194,50 @@ class Webcam(USBDevice):
 
             # 2.3.5.1.2 Class-specific VS Header Descriptor (Input)
             class ClassSpecificVideoStreamHeader(USBDescriptor):
-                raw: bytes = binascii.unhexlify('0e2401013f008200030101000100')
+                raw = uvc.ClassSpecificVideoStreamInputHeaderDescriptor(
+                    bNumFormats = 0x01,
+                    wTotalLength = 0x003f,
+                    bEndPointAddress = 0x82,
+                    bmInfo = 0x00,
+                    bTerminalLink = 0x03,
+                    bStillCaptureMethod = 0x01,
+                    bTriggerSupport = 0x01,
+                    bTriggerUsage = 0x00,
+                    bControlSize = 0x01,
+                    bmaControls=[0x0]
+                ).pack()
                 include_in_config = True
 
             # 2.3.5.1.3 Class-specific VS Format Descriptor
             class FormatMJPEG(USBDescriptor):
-                raw: bytes = binascii.unhexlify("0b24060101010100000000")
+                raw = uvc.ClassSpecificVideoStreamFormatDescriptor(
+                    bFormatIndex=0x01,
+                    bNumFrameDescriptors=0x01,
+                    bmFlags=0x01,
+                    bDefaultFrameIndex=0x01,
+                    bAspectRatioX=0,
+                    bAspectRatioY=0,
+                    bmInterlaceFlags=0,
+                    bCopyProtect=0
+                ).pack()
                 include_in_config: bool = True
 
             # 2.3.5.1.4 Class-specific VS Frame Descriptor
             class Frame(USBDescriptor):
-                raw: bytes = binascii.unhexlify( # real
-                    "2624070103b000900000ec0d0000ec0d00809400002a2c0a00002a2c0a002a2c0a0000000000"
-                )
+                raw = uvc.ClassSpecificVideoStreamFrameDescriptor(
+                    bFrameIndex=0x01,
+                    bmCapabilities=0x03,
+                    wWidth=176,
+                    wHeight=144,
+                    dwMinBitRate=0x000DEC00,
+                    dwMaxBitRate=0x000DEC00,
+                    dwMaxVideoFrameBufSize=0x00009480,
+                    dwDefaultFrameInterval=0x000A2C2A,
+                    bFrameIntervalType=0,
+                    dwMinFrameInterval=0x000A2C2A,
+                    dwMaxFrameInterval=0x000A2C2A,
+                    dwFrameIntervalStep=0x00000000,
+                ).pack()
                 include_in_config: bool = True
 
             # SET VALUE
