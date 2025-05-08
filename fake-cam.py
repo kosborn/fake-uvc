@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
 # pylint: disable=unused-wildcard-import, wildcard-import
-#
-# This file is based off of Facedancer's minimal example
-# https://github.com/greatscottgadgets/facedancer/blob/2c4b8aa27857d0d93efbcfc366db19030c17ea9e/examples/minimal.py
-#
 
-# TODO: Build a USB Descriptor class to implement a nice version of the UVC spec
-
-
-
-# from facedancer import *
 from facedancer import (
     DeviceSpeed,
     LanguageIDs,
-    # USBConfiguration,
+    USBConfiguration,
     USBControlRequest,
     USBDescriptor,
     USBDevice,
@@ -35,17 +26,14 @@ from facedancer.descriptor import USBDescribable, AutoInstantiable, StringRef, i
 from facedancer.request import USBRequestHandler
 from facedancer.logging import log, configure_default_logging, LOGLEVEL_TRACE
 
-# Patching the USBConfiguration class to quickly add support for the USBAssociation type
-from configuration_override import USBConfigurationOverride, USBAssociation
-
-import logging
-import binascii
-
 from dataclasses import dataclass
 from typing import List
+import logging
+import binascii
 import struct
 
 import uvc
+
 
 configure_default_logging(level=LOGLEVEL_TRACE)
 
@@ -69,17 +57,7 @@ class Webcam(USBDevice):
     protocol_revision_number: int = 0x01
     max_packet_size: int = 64
 
-    class Webcam(USBConfigurationOverride):
-
-        class InterfaceAssociation(USBAssociation):
-            number= 5
-            alternate = 5
-            raw: bytes = binascii.unhexlify("0b00020e030002")
-            include_in_config = True
-
-            # DESCRIPTOR_TYPE_NUMBER = 0x0B
-            # class_number = 0x0E
-            # subclass_number = 0x03
+    class Webcam(USBConfiguration):
 
         class VideoControl(USBInterface):
             number = 0x00
