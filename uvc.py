@@ -1,16 +1,9 @@
-import struct
-from enum import Enum, auto
-from dataclasses import dataclass, field, fields
-from typing import ClassVar, Annotated, Literal, TypeAlias, Optional, get_type_hints, get_origin, get_args
+from enum import IntEnum, Enum, auto
+from usb_protocol.types.descriptor import DescriptorFormat, DescriptorNumber, DescriptorField
 
+import construct
 
-# Type definitions with corresponding struct format characters
-Byte: TypeAlias = Annotated[int, "B"]  # 1 byte unsigned (0-255)
-Word: TypeAlias = Annotated[int, "H"]  # 2 bytes unsigned (0-65535)
-Int24: TypeAlias = Annotated[int, "3B"]  # 3 bytes unsigned (0-16777215)
-Int32: TypeAlias = Annotated[int, "I"]  # 4 bytes unsigned (0-4294967295)
-
-class UVC:
+class UVC(IntEnum):
     # Video Interface Class Code
     CC_VIDEO = 0x0E
 
@@ -227,296 +220,160 @@ class UVCError(Enum):
         raise ValueError(f"{cls.__name__} has no member with code {value}")
 
 
-@dataclass
-class USBDescriptor:
-    """Base class for USB descriptors with automatic packing based on field order"""
+InterfaceAssociationDescriptor = DescriptorFormat(
+    "bLength"                / construct.Const(8, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(0x0B),
+    "bFirstInterface"        / DescriptorField("First Interface", default=0x01),
+    "bInterfaceCount"        / DescriptorField("Interface Count", default=0x01),
+    "bFunctionClass"         / DescriptorField("Function Class", default=UVC.CC_VIDEO),
+    "bFunctionSubClass"      / DescriptorField("Function Subclass", default=UVC.SC_VIDEO_INTERFACE_COLLECTION),
+    "bFunctionProtocol"      / DescriptorField("Function Protocol", default=UVC.PC_PROTOCOL_UNDEFINED),
+    "iFunction"              / DescriptorField("Function String", default=0x00),
+)
 
-    # To be defined in subclasses
-    bDescriptorType: ClassVar[Byte]
+ClassSpecificVCInterfaceHeader = DescriptorFormat(
+    "bLength"                / construct.Const(13, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VC_HEADER),
+    "bcdUVC"                 / DescriptorField("bcdUVC", default=0x0100),
+    "wTotalLength"           / DescriptorField("wTotalLength", default=0x00),
+    "dwClockFrequency"       / DescriptorField("dwClockFrequency", length=4),
+    # TODO: bInCollection is dynamic based on length of baInterfaceNr, which is list[Byte]
+    "bInCollection"          / DescriptorField("Number of VideoStreaming Interfaces", default=0x01),
+    "baInterfaceNr"          / DescriptorField("baInterfaceNr", length=1, default=0x01),
+)
 
-    # Mapping from type annotations to struct format characters
-    FORMAT_MAP = {
-        Byte: 'B',
-        Word: 'H',
-        Int24: '3B',
-        Int32: 'I',
-    }
+""" Table 3-4 Input Terminal Descriptor"""
+InputTerminalDescriptorComposite = DescriptorFormat(
+    # TODO: length is 8+n (default +0 here)
+    "bLength"                / construct.Const(8, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VC_INPUT_TERMINAL),
+    "bTerminalID"            / DescriptorField("bTerminalID", default=0x01),
+    "wTerminalType"            / construct.Const(0x0401, construct.Int16ul),
+    "bAssocTerminal"         / DescriptorField("bAssocTerminal", default=0x00),
+    "iTerminal"              / DescriptorField("iTerminal", default=0x00),
+)
 
-    # Size in bytes for each format
-    SIZE_MAP = {
-        'B': 1,
-        'H': 2,
-        '3B': 3,
-        'I': 4,
-    }
-
-
-    def __post_init__(self):
-        """Calculate bLength automatically based on field types"""
-        self.bLength = 2  # Start with bLength(1) + bDescriptorType(1)
-
-        # Get annotated type information
-        type_hints = get_type_hints(self.__class__, include_extras=True)
-
-        # Calculate total length based on field types
-        # for f in fields(self):
-        for f in self.__dataclass_fields__.values():
-            if f.name not in ['bLength', 'bDescriptorType']:
-                # Get the type annotation for this field
-                field_type = type_hints.get(f.name)
-
-                # Extract format character from annotation
-                format_char = self._get_format_for_type(field_type)
-                if '*' in format_char:
-                    # Handle list types
-                    # drop * from format_char, and then format_char * len(value)
-                    format_char = format_char.replace('*', '')
-                    self.bLength += self.SIZE_MAP.get(format_char, 1) * len(getattr(self, f.name))
-                else:
-                    # Add field size to total length
-                    self.bLength += self.SIZE_MAP.get(format_char, 1)  # Default to 1 byte
-
-    def _get_format_for_type(self, type_annotation):
-        """Extract format character from a type annotation"""
-        # If it's an Annotated type, extract the format from metadata
-        if get_origin(type_annotation) is list:
-            # Handle list types
-            inner_type = type_annotation.__args__[0]
-            format_char = self._get_format_for_type(inner_type)
-            return f'{format_char}*'
-
-        if get_origin(type_annotation) is ClassVar:
-            inner_type = type_annotation.__args__[0]
-            format_char = self._get_format_for_type(inner_type)
-            return format_char
-
-
-        if type_annotation in self.FORMAT_MAP:
-            # Return the format character for standard types
-            return self.FORMAT_MAP[type_annotation]
-
-        # For standard types, return a default format
-        return 'B'  # Default to 1 byte
-
-    def pack(self) -> bytes:
-        """Convert the descriptor to its binary representation using field types"""
-        values = [self.bLength, self.bDescriptorType]
-        format_string = '<BB'  # Start with bLength and bDescriptorType
-
-        # Get annotated type information
-        type_hints = get_type_hints(self.__class__, include_extras=True)
-
-        # Add values and format characters for all fields
-        for f in self.__dataclass_fields__.values(): #fields(self):
-            if f.name not in ['bLength', 'bDescriptorType']:
-                value = getattr(self, f.name)
-
-                # Get the type annotation for this field
-                field_type = type_hints.get(f.name)
-
-                # Extract format character from annotation
-                format_char = self._get_format_for_type(field_type)
-                if '*' in format_char:
-                    # Handle list types
-                    # drop * from format_char, and then format_char * len(value)
-                    format_char = format_char.replace('*', '')
-                    format_string += format_char * len(value)
-                    values.extend(value)
-                elif field_type is Int24:
-                    format_string += format_char
-                    values.extend([int(b) for b in value.to_bytes(3, 'little')])
-                else:
-                    values.append(value)
-                    format_string += format_char
-
-        return struct.pack(format_string, *values)
-
-    def __str__(self) -> str:
-        """Return a string representation of the descriptor"""
-        result = [f"{self.__class__.__name__}:"]
-        result.append(f"  bLength: {self.bLength}")
-        result.append(f"  bDescriptorType: 0x{self.bDescriptorType:02X}")
-
-        # Add all other fields
-        for f in self.__dataclass_fields__.values():
-            if f.name not in ['bLength', 'bDescriptorType']:
-                value = getattr(self, f.name)
-                if isinstance(value, int):
-                    # Format integers as hex
-                    field_type = get_type_hints(self.__class__, include_extras=True).get(f.name)
-                    format_char = self._get_format_for_type(field_type)
-                    size = self.SIZE_MAP.get(format_char, 1) * 2  # Hex digits are 2 per byte
-                    result.append(f"  {f.name}: 0x{value:0{size}X}")
-                else:
-                    result.append(f"  {f.name}: {value}")
-
-        return "\n".join(result)
-
-
-@dataclass
-class InterfaceAssociationDescriptor(USBDescriptor):
-    """ Table 3-1 Standard Video Interface Collection IAD """
-    bDescriptorType: ClassVar[Byte] = 0x0B
-
-    bFirstInterface: Byte
-    bInterfaceCount: Byte
-    bFunctionClass: Byte = UVC.CC_VIDEO
-    bFunctionSubClass: Byte = UVC.SC_VIDEO_INTERFACE_COLLECTION
-    bFunctionProtocol: Byte = UVC.PC_PROTOCOL_UNDEFINED
-    iFunction: Byte = 0
-
-
-# Probably won't need this one
-@dataclass
-class StandardVCInterfaceHeader(USBDescriptor):
-    """ Table 3-2 Standard VC Interface Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-
-    bInterfaceNumber: Byte
-    bAlternateSetting: Byte
-    bNumEndpoints: Byte
-    bInterfaceClass: ClassVar[Byte] = UVC.CC_VIDEO
-    bInterfaceSubClass: ClassVar[Byte] = UVC.SC_VIDEOCONTROL
-    bInterfaceProtocol: ClassVar[Byte] = UVC.PC_PROTOCOL_15
-    iInterface: Byte = 0
-
-@dataclass
-class ClassSpecificVCInterfaceHeader(USBDescriptor):
-    """ Table 3-3 Class-specific VC Interface Header Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VC_HEADER
-
-    bcdUVC: Word # Video Device Class Specification
-    wTotalLength: Word
-    dwClockFrequency: Int32
-    bInCollection: Byte
-    baInterfaceNr: list[Byte] = field(default_factory=list)
-
-@dataclass
-class InputTerminalDescriptor(USBDescriptor):
-    """ Table 3-4 Input Terminal Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VC_INPUT_TERMINAL
-
-    bTerminalID: Byte = field(default=0x00)
-    wTerminalType: Word =  field(default=0x0000)
-    bAssocTerminal: Byte = field (default=0x00)
-    iTerminal: Byte = field(default=0x00)
-
-@dataclass
-class OutputTerminalDescriptor(USBDescriptor):
-    """ Table 3-5 Output Terminal Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VC_OUTPUT_TERMINAL
-
-    bTerminalID: Byte
-    wTerminalType: Word
-    bAssocTerminal: Byte
-    bSourceID: Byte
-    iTerminal: Byte
-
-
-@dataclass
-class InputTerminalCameraInputDescriptor(InputTerminalDescriptor):
-    wTerminalType: Word = field(default=0x0201)  # Camera Terminal
-
-    wObjectiveFocalLengthMin: Word = field(default=0x0000)
-    wObjectiveFocalLengthMax: Word = field(default=0x0000)
-    wOcularFocalLength: Word = field(default=0x0000)
-
+""" Table 3-4 Input Terminal Descriptor"""
+InputTerminalCameraInputDescriptor = DescriptorFormat(
+    # TODO: length is 8+n (default +10 here)
+    "bLength"                  / construct.Const(18, construct.Int8ul),
+    "bDescriptorType"          / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"       / DescriptorNumber(UVC.VC_INPUT_TERMINAL),
+    "bTerminalID"              / DescriptorField("bTerminalID", default=0x01),
+    "wTerminalType"            / construct.Const(0x0201, construct.Int16ul),
+    "bAssocTerminal"           / DescriptorField("bAssocTerminal", default=0x00),
+    "iTerminal"                / DescriptorField("iTerminal", default=0x00),
+    "wObjectiveFocalLengthMin" / DescriptorField("wObjectiveFocalLengthMin", default=0x0000),
+    "wObjectiveFocalLengthMax" / DescriptorField("wObjectiveFocalLengthMax", default=0x0000),
+    "wOcularFocalLength"       / DescriptorField("wOcularFocalLength", default=0x0000),
     # This controls the size of bmControls, but seems it's just 3 for this descriptor sub type
-    bControlSize: ClassVar[Byte] = 3
-    bmControls: Int24 = field(default=0x000000)
-
-@dataclass
-class SelectorUnitDescriptor(USBDescriptor):
-    """ Table 3-7 Selector Unit Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VC_SELECTOR_UNIT
-
-    bUnitID: Byte
-    bNrInPins: Byte
-    baSourceID: list[Byte] = field(default_factory=list)
-    iSelector: Byte = field(default=0x00)
-
-@dataclass
-class ProcessingUnitDescriptor(USBDescriptor):
-    """ Table 3-8 Processing Unit Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VC_PROCESSING_UNIT
-
-    bUnitID: Byte
-    bSourceID: Byte
-    wMaxMultiplier: Word = field(default=0x0000)
-    bControlSize: ClassVar[Byte] = 3
-    bmControls: Word = field(default=0x0000)
-    iProcessing: Byte = field(default=0x00)
-    bmVideoStandards: Byte = field(default=0x00)
-
-@dataclass
-class StandardInterruptEndpointDescriptor(USBDescriptor):
-    """ Table 3-11 Standard VC Interrupt Endpoint Descriptor """
-    bDescriptorType: ClassVar[Byte] = 0x05
-
-    bEndpointAddress: Byte
-    bmAttributes: Byte
-    wMaxPacketSize: Word
-    bInterval: Byte
-
-@dataclass
-class ClassSpecificVideoStreamInputHeaderDescriptor(USBDescriptor):
-    """ Table 3-14 Class-specific VS Interface Input Header Descriptor """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: ClassVar[Byte] = UVC.VS_INPUT_HEADER
-
-    bNumFormats: Byte
-    wTotalLength: Word
-    bEndPointAddress: Byte
-    bmInfo: Byte
-    bTerminalLink: Byte
-    bStillCaptureMethod: Byte
-    bTriggerSupport: Byte
-    bTriggerUsage: Byte
-    bControlSize: Byte
-    bmaControls: list[Byte]
+    "bControlSize"            / DescriptorField("bControlSize", default=3),
+    "bmControls"              / DescriptorField("bmControls", length=3, default=0x000000),
+)
 
 
-@dataclass
-class ClassSpecificVideoStreamFormatDescriptor(USBDescriptor):
-    """
-    Loosely based on Table 3-18 Still Image Frame Descriptor
-    This is more complex and will require some dynamic calculations
-    """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubType: Byte = field(default=UVC.VS_FORMAT_MJPEG)
+""" Table 3-5 Output Terminal Descriptor """
+OutputTerminalDescriptor = DescriptorFormat(
+    # TODO: length is 9+n (default +0 here)
+    "bLength"                / construct.Const(9, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VC_OUTPUT_TERMINAL),
+    "bTerminalID"            / DescriptorField("bTerminalID", default=0x02),
+    "wTerminalType"          / DescriptorField("wTerminalType", default=0x0101),
+    "bAssocTerminal"         / DescriptorField("bAssocTerminal", default=0x00),
+    "bSourceID"              / DescriptorField("bSourceID", default=0x01),
+    "iTerminal"              / DescriptorField("iTerminal", default=0x00),
+)
 
-    bFormatIndex: Byte = field(default=0x01)
-    bNumFrameDescriptors: Byte = field(default=0x01)
-    bmFlags: Byte = field(default=0x00)
-    bDefaultFrameIndex: Byte = field(default=0x01)
-    bAspectRatioX: Byte = field(default=0x00)
-    bAspectRatioY: Byte = field(default=0x00)
-    bmInterlaceFlags: Byte = field(default=0x00)
-    bCopyProtect: Byte = field(default=0x00)
+""" Table 3-7 Selector Unit Descriptor """
+SelectorUnitDescriptor = DescriptorFormat(
+    # TODO: legnth is 6+n (default +1 here)
+    "bLength"                / construct.Const(7, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VC_SELECTOR_UNIT),
+    "bUnitID"                / DescriptorField("bUnitID", default=0x05),
+    "bNrInPins"              / DescriptorField("bNrInPins", default=0x01),
+    "baSourceID"             / DescriptorField("baSourceID", length=1, default=0x01),
+    "iSelector"              / DescriptorField("iSelector", default=0x00),
+)
 
-@dataclass
-class ClassSpecificVideoStreamFrameDescriptor(USBDescriptor):
-    """
-    Loosely based on Table 3-18 Still Image Frame Descriptor
-    This is more complex and will require some dynamic calculations
-    """
-    bDescriptorType: ClassVar[Byte] = UVC.CS_INTERFACE
-    bDescriptorSubtype: Byte = field(default=UVC.VS_FRAME_MJPEG)
+""" Table 3-8 Processing Unit Descriptor """
+ProcessingUnitDescriptor = DescriptorFormat(
+    "bLength"                / construct.Const(13, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VC_PROCESSING_UNIT),
+    "bUnitID"                / DescriptorField("bUnitID", default=0x05),
+    "bSourceID"              / DescriptorField("bSourceID", default=0x04),
+    "wMaxMultiplier"         / DescriptorField("wMaxMultiplier", default=0x0000),
+    "bControlSize"           / DescriptorField("bControlSize", default=3),
+    "bmControls"             / DescriptorField("bmControls", length=3, default=0x000000),
+    "iProcessing"            / DescriptorField("iProcessing", default=0x00),
+    "bmVideoStandards"       / DescriptorField("bmVideoStandards", default=0x00),
+)
 
-    bFrameIndex: Byte = field(default=0x01)
-    bmCapabilities: Byte = field(default=0x03)
-    wWidth: Word = field(default=0x00B0)
-    wHeight: Word = field(default=0x0090)
-    dwMinBitRate: Int32 = field(default=0x000DEC00)
-    dwMaxBitRate: Int32 = field(default=0x000DEC00)
-    dwMaxVideoFrameBufSize: Int32 = field(default=0x00009480)
-    dwDefaultFrameInterval: Int32 = field(default=0x000A2C2A)
-    bFrameIntervalType: Byte = field(default=0x00)
-    dwMinFrameInterval: Int32 = field(default=0x000A2C2A)
-    dwMaxFrameInterval: Int32 = field(default=0x000A2C2A)
-    dwFrameIntervalStep: Int32 = field(default=0x00000000)
+""" Table 3-14 Class-specific VS Interface Input Header Descriptor """
+ClassSpecificVideoStreamInputHeaderDescriptor = DescriptorFormat(
+    # TODO: bLength is 13+bControlSize (default +1 here)
+    "bLength"                / construct.Const(14, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VS_INPUT_HEADER),
+    "bNumFormats"            / DescriptorField("bNumFormats", default=0x01),
+    "wTotalLength"           / DescriptorField("wTotalLength", default=0x00),
+    "bEndPointAddress"       / DescriptorField("bEndPointAddress", default=0x81),
+    "bmInfo"                 / DescriptorField("bmInfo", default=0x00),
+    "bTerminalLink"          / DescriptorField("bTerminalLink", default=0x01),
+    "bStillCaptureMethod"    / DescriptorField("bStillCaptureMethod", default=0x00),
+    "bTriggerSupport"        / DescriptorField("bTriggerSupport", default=0x00),
+    "bTriggerUsage"          / DescriptorField("bTriggerUsage", default=0x00),
+    # TODO: bControlSize is dynamic based on bmaControls, which is list[Byte]
+    "bControlSize"           / DescriptorField("bControlSize", default=0x01),
+    "bmaControls"            / DescriptorField("bmaControls", length=1, default=0x00),
+)
+
+
+"""
+Loosely based on Table 3-18 Still Image Frame Descriptor
+This is more complex and dependson bDescriptorSubType
+Defauling to mjpeg for this one
+"""
+ClassSpecificVideoStreamFormatDescriptorMJPEG = DescriptorFormat(
+    # TODO: bLength is 10+(4*bNumImageSizePatterns)
+    "bLength"                / construct.Const(11, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VS_FORMAT_MJPEG),
+    "bFormatIndex"           / DescriptorField("bFormatIndex", default=0x01),
+    "bNumFrameDescriptors"   / DescriptorField("bNumFrameDescriptors", default=0x01),
+    "bmFlags"                / DescriptorField("bmFlags", default=0x00),
+    "bDefaultFrameIndex"     / DescriptorField("bDefaultFrameIndex", default=0x01),
+    "bAspectRatioX"          / DescriptorField("bAspectRatioX", default=0x00),
+    "bAspectRatioY"          / DescriptorField("bAspectRatioY", default=0x00),
+    "bmInterlaceFlags"       / DescriptorField("bmInterlaceFlags", default=0x00),
+    "bCopyProtect"           / DescriptorField("bCopyProtect", default=0x00),
+)
+
+
+"""
+Loosely based on Table 3-18 Still Image Frame Descriptor
+This is more complex and dependson bDescriptorSubType
+Defauling to mjpeg for this one
+"""
+ClassSpecificVideoStreamFrameDescriptorMJPEG = DescriptorFormat(
+    "bLength"                / construct.Const(38, construct.Int8ul),
+    "bDescriptorType"        / DescriptorNumber(UVC.CS_INTERFACE),
+    "bDescriptorSubType"     / DescriptorNumber(UVC.VS_FRAME_MJPEG),
+    "bFrameIndex"            / DescriptorField("bFrameIndex", default=0x01),
+    "bmCapabilities"         / DescriptorField("bmCapabilities", default=0x03),
+    "wWidth"                 / DescriptorField("wWidth", default=0x00B0),
+    "wHeight"                / DescriptorField("wHeight", default=0x0090),
+    "dwMinBitRate"           / DescriptorField("dwMinBitRate", default=0x000DEC00, length=4),
+    "dwMaxBitRate"           / DescriptorField("dwMaxBitRate", default=0x000DEC00, length=4),
+    "dwMaxVideoFrameBufSize" / DescriptorField("dwMaxVideoFrameBufSize", default=0x00009480, length=4),
+    "dwDefaultFrameInterval" / DescriptorField("dwDefaultFrameInterval", default=0x000A2C2A, length=4),
+    "bFrameIntervalType"     / DescriptorField("bFrameIntervalType", default=0x00),
+    "dwMinFrameInterval"     / DescriptorField("dwMinFrameInterval", default=0x000A2C2A, length=4),
+    "dwMaxFrameInterval"     / DescriptorField("dwMaxFrameInterval", default=0x000A2C2A, length=4),
+    "dwFrameIntervalStep"    / DescriptorField("dwFrameIntervalStep", default=0x00000000, length=4),
+
+)
